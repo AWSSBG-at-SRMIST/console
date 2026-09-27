@@ -245,22 +245,32 @@ export function slugify(title: string): string {
 // Supports formats like:
 //   https://drive.google.com/file/d/FILE_ID/view
 //   https://drive.google.com/file/d/FILE_ID/view?usp=sharing
-// Returns the FILE_ID suitable for preview embedding, or null if not a valid Drive URL.
+//   https://drive.google.com/open?id=FILE_ID
+//   https://drive.google.com/uc?id=FILE_ID
+// Returns the FILE_ID, or null if not a valid Drive URL.
 export function extractGoogleDriveFileId(url: string): string | null {
   if (!url || typeof url !== 'string') return null;
-  try {
-    const match = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
-    return match ? match[1] : null;
-  } catch {
-    return null;
-  }
+  const trimmed = url.trim();
+  const pathMatch = trimmed.match(/\/(?:file|uc)\/d\/([a-zA-Z0-9_-]+)/);
+  if (pathMatch) return pathMatch[1];
+  const queryMatch = trimmed.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (queryMatch) return queryMatch[1];
+  return null;
 }
 
 // Generates a Google Drive thumbnail/preview URL from a file ID.
 // Viewer/share URLs cannot be used as <img> src — this thumbnail endpoint can.
+// <img> tags that use this URL MUST set referrerPolicy="no-referrer": this app
+// sends Referrer-Policy: strict-origin-when-cross-origin, and Drive 403s
+// thumbnail requests that include a non-Google referrer.
 export function getGoogleDrivePreviewUrl(fileId: string, width = 400): string {
   if (!fileId) return '';
   return `https://drive.google.com/thumbnail?id=${fileId}&sz=w${width}`;
+}
+
+export function getGoogleDriveFallbackPreviewUrl(fileId: string, width = 400): string {
+  if (!fileId) return '';
+  return `https://lh3.googleusercontent.com/d/${fileId}=w${width}`;
 }
 
 // Convert a Google Drive sharing URL to a usable preview URL.

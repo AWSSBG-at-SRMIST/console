@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth';
 import { db, TABLE, ScanCommand, QueryCommand, PutCommand } from '@/lib/dynamodb';
 import { logAction } from '@/lib/audit';
-import { isPresidium } from '@/lib/permissions';
+import { canManageEvents } from '@/lib/permissions';
+import { eventDateForStorage } from '@/lib/events';
 import { randomUUID } from 'crypto';
 import type { Event, EventStatus } from '@/types';
 
@@ -12,6 +13,9 @@ const VALID_STATUSES: EventStatus[] = ['DRAFT', 'PUBLISHED', 'LIVE', 'COMPLETED'
 export async function GET(req: NextRequest) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!canManageEvents(user)) {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  }
 
   try {
     const { searchParams } = new URL(req.url);
@@ -37,15 +41,8 @@ export async function GET(req: NextRequest) {
       result = await db.send(new ScanCommand({ TableName: TABLE.EVENTS }));
     }
 
-    let events = (result.Items || []) as Event[];
-    
-    // Presidium sees all events; others see published only
-    if (!isPresidium(user)) {
-      events = events.filter(e => e.status === 'PUBLISHED' || e.status === 'LIVE' || e.status === 'COMPLETED');
-    }
-
-    // Sort by date descending (most recent first)
-    events.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    const events = ((result.Items || []) as Event[])
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
     return NextResponse.json({ success: true, data: events });
   } catch (error) {
@@ -54,11 +51,11 @@ export async function GET(req: NextRequest) {
   }
 }
 
-// Create a new event (Presidium only)
+// Create a new event (Presidium and Directors)
 export async function POST(req: NextRequest) {
   const user = await getCurrentUser();
-  if (!user || !isPresidium(user)) {
-    return NextResponse.json({ error: 'Unauthorized: only Presidium can create events' }, { status: 403 });
+  if (!user || !canManageEvents(user)) {
+    return NextResponse.json({ error: 'Unauthorized: only Presidium and Directors can create events' }, { status: 403 });
   }
 
   try {
@@ -85,58 +82,63 @@ export async function POST(req: NextRequest) {
       status = 'DRAFT',
     } = body;
 
-    // Validation
-    if (!name || !description || !date || !startTime || !endTime || !venue) {
-      return NextResponse.json(
-        { error: 'Missing required fields: name, description, date, startTime, endTime, venue' },
-        { status: 400 }
-      );
+    const isDraft = status === 'DRAFT';
+
+    if (!name || !String(name).trim()) {
+      return NextResponse.json({ error: 'Event name is required' }, { status: 400 });
     }
 
-    // Validate date format (ISO date YYYY-MM-DD)
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    // Incomplete drafts are allowed so leaving the create form can persist work.
+    // Publish/non-draft still requires the full event.
+    if (!isDraft) {
+      if (!description || !date || !startTime || !endTime || !venue) {
+        return NextResponse.json(
+          { error: 'Missing required fields: name, description, date, startTime, endTime, venue' },
+          { status: 400 }
+        );
+      }
+    }
+
+    if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       return NextResponse.json({ error: 'date must be in ISO format (YYYY-MM-DD)' }, { status: 400 });
     }
 
-    // Validate end date for multi-day events
     if (endDate) {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
         return NextResponse.json({ error: 'endDate must be in ISO format (YYYY-MM-DD)' }, { status: 400 });
       }
-      if (endDate < date) {
+      if (date && endDate < date) {
         return NextResponse.json({ error: 'endDate cannot be earlier than date' }, { status: 400 });
       }
     }
 
-    // Validate time format (HH:mm)
-    if (!/^\d{2}:\d{2}$/.test(startTime) || !/^\d{2}:\d{2}$/.test(endTime)) {
-      return NextResponse.json({ error: 'startTime and endTime must be in HH:mm format' }, { status: 400 });
+    if (startTime && !/^\d{2}:\d{2}$/.test(startTime)) {
+      return NextResponse.json({ error: 'startTime must be in HH:mm format' }, { status: 400 });
+    }
+    if (endTime && !/^\d{2}:\d{2}$/.test(endTime)) {
+      return NextResponse.json({ error: 'endTime must be in HH:mm format' }, { status: 400 });
     }
 
-    // Validate status
     if (!VALID_STATUSES.includes(status)) {
       return NextResponse.json({ error: 'Invalid status value' }, { status: 400 });
     }
 
-    // Validate time range
-    if (startTime >= endTime) {
+    if (startTime && endTime && startTime >= endTime) {
       return NextResponse.json({ error: 'startTime must be before endTime' }, { status: 400 });
     }
 
-    // Validate event mode
     if (eventMode && !['IN_PERSON', 'ONLINE', 'HYBRID'].includes(eventMode)) {
       return NextResponse.json({ error: 'Invalid event mode' }, { status: 400 });
     }
 
-    // Validate registration fields if required
-    if (registrationRequired) {
+    if (!isDraft && registrationRequired) {
       if (!registrationLink) {
         return NextResponse.json({ error: 'Registration link is required when registration is required' }, { status: 400 });
       }
       if (!registrationDeadline) {
         return NextResponse.json({ error: 'Registration deadline is required when registration is required' }, { status: 400 });
       }
-      if (registrationDeadline > date) {
+      if (date && registrationDeadline > date) {
         return NextResponse.json({ error: 'Registration deadline must be on or before the event date' }, { status: 400 });
       }
     }
@@ -151,13 +153,13 @@ export async function POST(req: NextRequest) {
 
     const event: Event = {
       eventId,
-      name,
-      description,
-      date,
+      name: String(name).trim(),
+      description: description || '',
+      date: eventDateForStorage(date),
       endDate: endDate || null,
-      startTime,
-      endTime,
-      venue,
+      startTime: startTime || '',
+      endTime: endTime || '',
+      venue: venue || '',
       banner: banner || null,
       meetupLink: meetupLink || null,
       messageToCR: messageToCR || null,

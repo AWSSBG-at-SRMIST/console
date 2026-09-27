@@ -1,12 +1,12 @@
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth';
-import { isPresidium } from '@/lib/permissions';
+import { canManageEvents } from '@/lib/permissions';
 import EventForm from '@/components/events/EventForm';
 
 export default async function NewEventPage() {
   const user = await getCurrentUser();
-  if (!user || !isPresidium(user)) {
-    redirect('/events');
+  if (!user || !canManageEvents(user)) {
+    redirect('/dashboard');
   }
 
   return (

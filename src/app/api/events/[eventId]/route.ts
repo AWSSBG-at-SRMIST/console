@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth';
 import { db, TABLE, GetCommand, UpdateCommand, DeleteCommand } from '@/lib/dynamodb';
 import { logAction } from '@/lib/audit';
-import { isPresidium } from '@/lib/permissions';
+import { canManageEvents } from '@/lib/permissions';
+import { eventDateForStorage, isEventDateSet } from '@/lib/events';
 import type { Event, EventStatus } from '@/types';
 
 const VALID_STATUSES: EventStatus[] = ['DRAFT', 'PUBLISHED', 'LIVE', 'COMPLETED', 'CANCELLED', 'ARCHIVED'];
@@ -11,6 +12,9 @@ const VALID_STATUSES: EventStatus[] = ['DRAFT', 'PUBLISHED', 'LIVE', 'COMPLETED'
 export async function GET(req: NextRequest, { params }: { params: Promise<{ eventId: string }> }) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!canManageEvents(user)) {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  }
 
   try {
     const { eventId } = await params;
@@ -23,27 +27,18 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ even
       return NextResponse.json({ error: 'Event not found' }, { status: 404 });
     }
 
-    const event = result.Item as Event;
-
-    // Access control: Presidium sees all, others see published/live/completed
-    if (!isPresidium(user)) {
-      if (!['PUBLISHED', 'LIVE', 'COMPLETED'].includes(event.status)) {
-        return NextResponse.json({ error: 'Event not accessible' }, { status: 403 });
-      }
-    }
-
-    return NextResponse.json({ success: true, data: event });
+    return NextResponse.json({ success: true, data: result.Item as Event });
   } catch (error) {
     console.error('Get event error:', error);
     return NextResponse.json({ error: 'Failed to fetch event' }, { status: 500 });
   }
 }
 
-// Update an event (Presidium only)
+// Update an event (Presidium and Directors)
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ eventId: string }> }) {
   const user = await getCurrentUser();
-  if (!user || !isPresidium(user)) {
-    return NextResponse.json({ error: 'Unauthorized: only Presidium can update events' }, { status: 403 });
+  if (!user || !canManageEvents(user)) {
+    return NextResponse.json({ error: 'Unauthorized: only Presidium and Directors can update events' }, { status: 403 });
   }
 
   try {
@@ -78,9 +73,13 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ ev
       if (field in body) {
         const value = body[field];
 
-        // Validate specific fields
-        if (field === 'date' && value && !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-          return NextResponse.json({ error: 'date must be in ISO format (YYYY-MM-DD)' }, { status: 400 });
+        let storedValue = value;
+
+        if (field === 'date') {
+          storedValue = eventDateForStorage(value);
+          if (isEventDateSet(storedValue) && !/^\d{4}-\d{2}-\d{2}$/.test(storedValue)) {
+            return NextResponse.json({ error: 'date must be in ISO format (YYYY-MM-DD)' }, { status: 400 });
+          }
         }
         if (field === 'endDate' && value && !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
           return NextResponse.json({ error: 'endDate must be in ISO format (YYYY-MM-DD)' }, { status: 400 });
@@ -92,23 +91,21 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ ev
           return NextResponse.json({ error: 'Invalid status value' }, { status: 400 });
         }
 
-        // Validate time range if updating times
-        const newStartTime = body.startTime || existing.startTime;
-        const newEndTime = body.endTime || existing.endTime;
-        if (newStartTime >= newEndTime) {
+        const newStartTime = body.startTime ?? existing.startTime;
+        const newEndTime = body.endTime ?? existing.endTime;
+        if (newStartTime && newEndTime && newStartTime >= newEndTime) {
           return NextResponse.json({ error: 'startTime must be before endTime' }, { status: 400 });
         }
 
-        // Validate end date vs start date
         if (field === 'endDate' && value) {
-          const newDate = body.date || existing.date;
-          if (value < newDate) {
+          const newDate = eventDateForStorage(body.date ?? existing.date);
+          if (isEventDateSet(newDate) && value < newDate) {
             return NextResponse.json({ error: 'endDate cannot be earlier than date' }, { status: 400 });
           }
         }
-        if (field === 'date' && value) {
+        if (field === 'date' && isEventDateSet(storedValue)) {
           const newEndDate = body.endDate || existing.endDate;
-          if (newEndDate && value > newEndDate) {
+          if (newEndDate && storedValue > newEndDate) {
             return NextResponse.json({ error: 'date cannot be later than endDate' }, { status: 400 });
           }
         }
@@ -120,11 +117,14 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ ev
 
         // Validate registration fields
         if (field === 'registrationRequired' && value === true) {
-          if (!body.registrationLink && !existing.registrationLink) {
-            return NextResponse.json({ error: 'Registration link is required when registration is required' }, { status: 400 });
-          }
-          if (!body.registrationDeadline && !existing.registrationDeadline) {
-            return NextResponse.json({ error: 'Registration deadline is required when registration is required' }, { status: 400 });
+          const nextStatus = body.status || existing.status;
+          if (nextStatus !== 'DRAFT') {
+            if (!body.registrationLink && !existing.registrationLink) {
+              return NextResponse.json({ error: 'Registration link is required when registration is required' }, { status: 400 });
+            }
+            if (!body.registrationDeadline && !existing.registrationDeadline) {
+              return NextResponse.json({ error: 'Registration deadline is required when registration is required' }, { status: 400 });
+            }
           }
         }
 
@@ -134,7 +134,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ ev
         }
 
         expressionAttributeNames[`#${field}`] = field;
-        values[`:${field}`] = value !== undefined ? value : null;
+        values[`:${field}`] = storedValue !== undefined ? storedValue : null;
         updateExpression += ` #${field} = :${field},`;
       }
     }
@@ -169,11 +169,11 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ ev
   }
 }
 
-// Delete an event (Presidium only)
+// Delete an event (Presidium and Directors)
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ eventId: string }> }) {
   const user = await getCurrentUser();
-  if (!user || !isPresidium(user)) {
-    return NextResponse.json({ error: 'Unauthorized: only Presidium can delete events' }, { status: 403 });
+  if (!user || !canManageEvents(user)) {
+    return NextResponse.json({ error: 'Unauthorized: only Presidium and Directors can delete events' }, { status: 403 });
   }
 
   try {

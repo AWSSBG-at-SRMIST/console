@@ -7,8 +7,10 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ArrowLeft, Edit2, Trash2, Calendar, Clock, MapPin, Globe, Link2, Users, ExternalLink } from 'lucide-react';
 import { toast } from 'sonner';
-import { cn, convertGoogleDriveUrlToPreview } from '@/lib/utils';
+import { cn } from '@/lib/utils';
 import { MeetupLogo } from '@/components/events/MeetupLogo';
+import { EventBannerImage } from '@/components/events/EventBannerImage';
+import { isEventDateSet } from '@/lib/events';
 import type { Event, EventStatus } from '@/types';
 
 const STATUS_COLORS: Record<EventStatus, string> = {
@@ -57,6 +59,7 @@ export default function EventDetailClient({ event, canEdit }: EventDetailClientP
 
   // Format date range display
   const formatDateRange = (): string => {
+    if (!isEventDateSet(event.date)) return 'Date TBD';
     const startDate = new Date(event.date);
     const endDate = event.endDate ? new Date(event.endDate) : null;
 
@@ -136,9 +139,10 @@ export default function EventDetailClient({ event, canEdit }: EventDetailClientP
                 <p className="text-xs text-[#888] font-mono">Banner unavailable</p>
               </div>
             ) : (
-              <img
-                src={convertGoogleDriveUrlToPreview(bannerSrc, 1200)}
+              <EventBannerImage
+                url={bannerSrc}
                 alt={event.name}
+                width={1200}
                 className="w-full h-full object-cover"
                 onError={() => setBannerFailed(true)}
               />

@@ -1,15 +1,16 @@
 'use client';
 
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
-import { ExternalLink, Eye, X } from 'lucide-react';
+import { ExternalLink, X } from 'lucide-react';
 import type { Event, EventStatus, EventMode, EventDuration } from '@/types';
-import { extractGoogleDriveFileId, getGoogleDrivePreviewUrl, convertGoogleDriveUrlToPreview } from '@/lib/utils';
+import { EventBannerImage } from '@/components/events/EventBannerImage';
+import { eventDateForForm } from '@/lib/events';
 
 const EVENT_TYPES = ['WORKSHOP', 'HACKATHON', 'SEMINAR', 'SOCIAL', 'CONFERENCE', 'TALK', 'OTHER'];
 const EVENT_MODES: EventMode[] = ['IN_PERSON', 'ONLINE', 'HYBRID'];
@@ -55,7 +56,7 @@ export default function EventForm({ initialEvent }: EventFormProps) {
     name: initialEvent?.name || '',
     description: initialEvent?.description || '',
     duration: initialDuration,
-    date: initialEvent?.date || '',
+    date: eventDateForForm(initialEvent?.date),
     endDate: initialEvent?.endDate || '',
     startTime: initialEvent?.startTime || '',
     endTime: initialEvent?.endTime || '',
@@ -78,12 +79,20 @@ export default function EventForm({ initialEvent }: EventFormProps) {
   const [bannerPreviewError, setBannerPreviewError] = useState(false);
   const [isSavingDraft, setIsSavingDraft] = useState(false);
 
+  const formDataRef = useRef(formData);
+  const skipAutoSaveRef = useRef(false);
+  const leaveSaveStartedRef = useRef(false);
+
+  useEffect(() => {
+    formDataRef.current = formData;
+  }, [formData]);
+
   // Compute initial state once with useMemo
   const initialState = useMemo<FormData>(() => ({
     name: initialEvent?.name || '',
     description: initialEvent?.description || '',
     duration: initialDuration,
-    date: initialEvent?.date || '',
+    date: eventDateForForm(initialEvent?.date),
     endDate: initialEvent?.endDate || '',
     startTime: initialEvent?.startTime || '',
     endTime: initialEvent?.endTime || '',
@@ -102,39 +111,37 @@ export default function EventForm({ initialEvent }: EventFormProps) {
     status: initialEvent?.status || 'DRAFT',
   }), [initialEvent, initialDuration]);
 
-  // Detect unsaved changes with useMemo
   const hasUnsavedChanges = useMemo(() => {
-    if (!isEditMode) return false;
     return JSON.stringify(formData) !== JSON.stringify(initialState);
-  }, [formData, isEditMode, initialState]);
+  }, [formData, initialState]);
 
-  // Auto-save draft on component unmount or navigation
-  const saveDraft = useCallback(async (currentFormData: FormData) => {
-    if (!currentFormData.name.trim()) return; // Don't save empty drafts
-    
+  const buildPayload = useCallback((currentFormData: FormData, status: EventStatus) => ({
+    name: currentFormData.name,
+    description: currentFormData.description,
+    date: currentFormData.date,
+    endDate: currentFormData.duration === 'MULTI_DAY' ? currentFormData.endDate : null,
+    startTime: currentFormData.startTime,
+    endTime: currentFormData.endTime,
+    venue: currentFormData.venue,
+    banner: currentFormData.banner || null,
+    meetupLink: currentFormData.meetupLink || null,
+    messageToCR: currentFormData.messageToCR || null,
+    eventType: currentFormData.eventType || null,
+    customEventType: currentFormData.eventType === 'OTHER' ? currentFormData.customEventType : null,
+    eventMode: currentFormData.eventMode || null,
+    registrationRequired: currentFormData.registrationRequired,
+    registrationLink: currentFormData.registrationRequired ? currentFormData.registrationLink : null,
+    registrationDeadline: currentFormData.registrationRequired ? currentFormData.registrationDeadline : null,
+    participantCapacity: currentFormData.participantCapacity ? parseInt(currentFormData.participantCapacity, 10) : null,
+    meetingLink: currentFormData.meetingLink || null,
+    status,
+  }), []);
+
+  const saveDraft = useCallback(async (currentFormData: FormData, options?: { keepalive?: boolean }) => {
+    if (!currentFormData.name.trim()) return false;
+
     try {
-      const payload = {
-        name: currentFormData.name,
-        description: currentFormData.description,
-        date: currentFormData.date,
-        endDate: currentFormData.duration === 'MULTI_DAY' ? currentFormData.endDate : null,
-        startTime: currentFormData.startTime,
-        endTime: currentFormData.endTime,
-        venue: currentFormData.venue,
-        banner: currentFormData.banner || null,
-        meetupLink: currentFormData.meetupLink || null,
-        messageToCR: currentFormData.messageToCR || null,
-        eventType: currentFormData.eventType || null,
-        customEventType: currentFormData.eventType === 'OTHER' ? currentFormData.customEventType : null,
-        eventMode: currentFormData.eventMode || null,
-        registrationRequired: currentFormData.registrationRequired,
-        registrationLink: currentFormData.registrationRequired ? currentFormData.registrationLink : null,
-        registrationDeadline: currentFormData.registrationRequired ? currentFormData.registrationDeadline : null,
-        participantCapacity: currentFormData.participantCapacity ? parseInt(currentFormData.participantCapacity, 10) : null,
-        meetingLink: currentFormData.meetingLink || null,
-        status: currentFormData.status,
-      };
-
+      const payload = buildPayload(currentFormData, 'DRAFT');
       const method = isEditMode ? 'PATCH' : 'POST';
       const url = isEditMode ? `/api/events/${initialEvent.eventId}` : '/api/events';
 
@@ -142,27 +149,57 @@ export default function EventForm({ initialEvent }: EventFormProps) {
         method,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
+        keepalive: options?.keepalive ?? false,
       });
 
       if (!response.ok) {
-        console.error('Draft save failed silently');
+        console.error('Draft save failed');
+        return false;
       }
+      return true;
     } catch (err) {
       console.error('Draft auto-save error:', err);
+      return false;
     }
-  }, [isEditMode, initialEvent]);
+  }, [isEditMode, initialEvent, buildPayload]);
 
-  // Warn on page unload if unsaved changes
+  const persistDraftOnLeave = useCallback(() => {
+    if (skipAutoSaveRef.current || leaveSaveStartedRef.current) return;
+    const current = formDataRef.current;
+    if (!current.name.trim()) return;
+    // Only auto-persist new events and existing drafts. Don't silently
+    // rewrite a published/live event when the user just navigates away.
+    if (isEditMode && initialEvent?.status !== 'DRAFT') return;
+
+    leaveSaveStartedRef.current = true;
+    void saveDraft(current, { keepalive: true });
+  }, [isEditMode, initialEvent, saveDraft]);
+
+  useEffect(() => {
+    const handlePageHide = () => persistDraftOnLeave();
+    window.addEventListener('pagehide', handlePageHide);
+    return () => {
+      window.removeEventListener('pagehide', handlePageHide);
+      persistDraftOnLeave();
+    };
+  }, [persistDraftOnLeave]);
+
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (hasUnsavedChanges && !isSubmitting) {
+      if (skipAutoSaveRef.current || isSubmitting) return;
+      const current = formDataRef.current;
+      if (!isEditMode && current.name.trim()) {
+        persistDraftOnLeave();
+        return;
+      }
+      if (hasUnsavedChanges) {
         e.preventDefault();
         e.returnValue = '';
       }
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [hasUnsavedChanges, isSubmitting]);
+  }, [hasUnsavedChanges, isSubmitting, isEditMode, persistDraftOnLeave]);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
@@ -262,9 +299,17 @@ export default function EventForm({ initialEvent }: EventFormProps) {
 
   const handleSaveDraftAndLeave = async () => {
     setIsSavingDraft(true);
-    await saveDraft(formData);
+    const saved = await saveDraft(formData);
     setIsSavingDraft(false);
-    router.back();
+    if (!saved) {
+      toast.error('Could not save draft');
+      return;
+    }
+    skipAutoSaveRef.current = true;
+    leaveSaveStartedRef.current = true;
+    toast.success('Draft saved');
+    router.push('/events');
+    router.refresh();
   };
 
   const handlePublish = async (e: React.FormEvent) => {
@@ -318,6 +363,8 @@ export default function EventForm({ initialEvent }: EventFormProps) {
       }
 
       toast.success(isEditMode ? 'Event updated' : 'Event created');
+      skipAutoSaveRef.current = true;
+      leaveSaveStartedRef.current = true;
       router.push('/events');
       router.refresh();
     } catch (err) {
@@ -676,8 +723,8 @@ export default function EventForm({ initialEvent }: EventFormProps) {
             )}
             {formData.banner && !bannerPreviewError && (
               <div className="w-full h-40 bg-[#1a1a1a] border border-[#2d2d2d] rounded overflow-hidden">
-                <img
-                  src={convertGoogleDriveUrlToPreview(formData.banner)}
+                <EventBannerImage
+                  url={formData.banner}
                   alt="Banner preview"
                   className="w-full h-full object-cover"
                   onError={() => setBannerPreviewError(true)}
@@ -772,11 +819,27 @@ export default function EventForm({ initialEvent }: EventFormProps) {
         <Button
           type="button"
           variant="outline"
-          disabled={isSubmitting}
-          onClick={() => {
+          disabled={isSubmitting || isSavingDraft}
+          onClick={async () => {
+            if (!isEditMode && formData.name.trim()) {
+              setIsSavingDraft(true);
+              const saved = await saveDraft(formData);
+              setIsSavingDraft(false);
+              if (!saved) {
+                toast.error('Could not save draft');
+                return;
+              }
+              skipAutoSaveRef.current = true;
+              leaveSaveStartedRef.current = true;
+              toast.success('Draft saved');
+              router.push('/events');
+              router.refresh();
+              return;
+            }
             if (hasUnsavedChanges && !confirm('You have unsaved changes. Are you sure you want to discard them?')) {
               return;
             }
+            skipAutoSaveRef.current = true;
             router.back();
           }}
         >

@@ -8,8 +8,10 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Trash2, Edit2, Search, X, Calendar, Clock, MapPin, Globe, Tag } from 'lucide-react';
 import { toast } from 'sonner';
-import { cn, convertGoogleDriveUrlToPreview } from '@/lib/utils';
+import { cn } from '@/lib/utils';
 import { MeetupLogo } from '@/components/events/MeetupLogo';
+import { EventBannerImage } from '@/components/events/EventBannerImage';
+import { isEventDateSet } from '@/lib/events';
 import type { Event, EventStatus } from '@/types';
 
 const STATUS_COLORS: Record<EventStatus, { bg: string; badge: string; border: string; tint: string }> = {
@@ -24,10 +26,10 @@ const STATUS_COLORS: Record<EventStatus, { bg: string; badge: string; border: st
 interface EventsListClientProps {
   events: Event[];
   canCreate: boolean;
-  isPresidium: boolean;
+  canManageEvents: boolean;
 }
 
-export default function EventsListClient({ events: initialEvents, canCreate, isPresidium }: EventsListClientProps) {
+export default function EventsListClient({ events: initialEvents, canCreate, canManageEvents }: EventsListClientProps) {
   const router = useRouter();
   const [events, setEvents] = useState(initialEvents);
   const [statusFilter, setStatusFilter] = useState<EventStatus | ''>('');
@@ -39,8 +41,8 @@ export default function EventsListClient({ events: initialEvents, canCreate, isP
     const matchesSearch = !searchTerm || 
       e.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       e.description.toLowerCase().includes(searchTerm.toLowerCase());
-    // Non-Presidium users should not see DRAFT events
-    const isVisible = isPresidium || e.status !== 'DRAFT';
+    // Users without Event management access should not see DRAFT events
+    const isVisible = canManageEvents || e.status !== 'DRAFT';
     return matchesStatus && matchesSearch && isVisible;
   });
 
@@ -70,6 +72,7 @@ export default function EventsListClient({ events: initialEvents, canCreate, isP
 
   // Format date range display
   const formatDateRange = (event: Event): string => {
+    if (!isEventDateSet(event.date)) return 'Date TBD';
     const startDate = new Date(event.date);
     const endDate = event.endDate ? new Date(event.endDate) : null;
 
@@ -167,7 +170,7 @@ export default function EventsListClient({ events: initialEvents, canCreate, isP
             >
               All
             </button>
-            {isPresidium && (
+            {canManageEvents && (
               <button
                 onClick={() => setStatusFilter('DRAFT')}
                 className={cn(
@@ -241,13 +244,10 @@ export default function EventsListClient({ events: initialEvents, canCreate, isP
                   {/* Banner */}
                   {event.banner || event.bannerImageUrl ? (
                     <div className="relative w-full h-40 bg-[#1a1a1a] overflow-hidden border-b-2 border-[#2d2d2d]">
-                      <img
-                        src={convertGoogleDriveUrlToPreview(event.banner || event.bannerImageUrl || '')}
+                      <EventBannerImage
+                        url={event.banner || event.bannerImageUrl || ''}
                         alt={event.name}
                         className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-                        onError={(e) => {
-                          (e.target as HTMLImageElement).style.display = 'none';
-                        }}
                       />
                       {/* Status tint overlay */}
                       <div className={cn('absolute inset-0 bg-gradient-to-b', colors.tint)} />
@@ -337,7 +337,7 @@ export default function EventsListClient({ events: initialEvents, canCreate, isP
                     <div className="text-xs text-[#666] font-mono border-t border-[#2d2d2d] pt-2">
                       <div className="flex items-center justify-between">
                         <p>by {event.createdByName}</p>
-                        {isPresidium && (
+                        {canManageEvents && (
                           <div className="relative z-2 group/status">
                             <button
                               type="button"
@@ -384,7 +384,7 @@ export default function EventsListClient({ events: initialEvents, canCreate, isP
       {/* Summary */}
       {events.length > 0 && (
         <div className="text-xs text-[#666] font-mono text-center pt-4">
-          {filteredEvents.length} of {events.filter(e => isPresidium || e.status !== 'DRAFT').length} event{filteredEvents.length !== 1 ? 's' : ''}
+          {filteredEvents.length} of {events.filter(e => canManageEvents || e.status !== 'DRAFT').length} event{filteredEvents.length !== 1 ? 's' : ''}
           {(statusFilter || searchTerm) && ` (${filteredEvents.length} matching current filters)`}
         </div>
       )}
