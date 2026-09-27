@@ -240,3 +240,36 @@ export function slugify(title: string): string {
     .replace(/^-+|-+$/g, '')
     .slice(0, 60) || 'form';
 }
+
+// Converts Google Drive sharing URLs to image preview URLs.
+// Supports formats like:
+//   https://drive.google.com/file/d/FILE_ID/view
+//   https://drive.google.com/file/d/FILE_ID/view?usp=sharing
+// Returns the FILE_ID suitable for preview embedding, or null if not a valid Drive URL.
+export function extractGoogleDriveFileId(url: string): string | null {
+  if (!url || typeof url !== 'string') return null;
+  try {
+    const match = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+    return match ? match[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+// Generates a Google Drive thumbnail/preview URL from a file ID.
+// Viewer/share URLs cannot be used as <img> src — this thumbnail endpoint can.
+export function getGoogleDrivePreviewUrl(fileId: string, width = 400): string {
+  if (!fileId) return '';
+  return `https://drive.google.com/thumbnail?id=${fileId}&sz=w${width}`;
+}
+
+// Convert a Google Drive sharing URL to a usable preview URL.
+// Returns the thumbnail URL if a Drive file ID is found, otherwise the original URL.
+export function convertGoogleDriveUrlToPreview(url: string, width = 400): string {
+  if (!url) return '';
+  const fileId = extractGoogleDriveFileId(url);
+  if (fileId) {
+    return getGoogleDrivePreviewUrl(fileId, width);
+  }
+  return url;
+}

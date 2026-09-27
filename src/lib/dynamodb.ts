@@ -31,6 +31,11 @@ export const TABLE = {
   FREE_SLOTS: 'sbg-free-slots',
   FORMS: 'sbg-forms',
   FORM_RESPONSES: 'sbg-forms-responses',
+  EVENTS: 'sbg-events',
+  EVENT_ACTIVITIES: 'sbg-event-activities',
+  EVENT_PARTICIPANTS: 'sbg-event-participants',
+  EVENT_TRACKING: 'sbg-event-tracking',
+  EVENT_COORDINATORS: 'sbg-event-coordinators',
 } as const;
 
 export { GetCommand, PutCommand, UpdateCommand, DeleteCommand, QueryCommand, ScanCommand, BatchWriteCommand, TransactWriteCommand };

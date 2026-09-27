@@ -1,0 +1,208 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { getCurrentUser } from '@/lib/auth';
+import { db, TABLE, GetCommand, UpdateCommand, DeleteCommand } from '@/lib/dynamodb';
+import { logAction } from '@/lib/audit';
+import { isPresidium } from '@/lib/permissions';
+import type { Event, EventStatus } from '@/types';
+
+const VALID_STATUSES: EventStatus[] = ['DRAFT', 'PUBLISHED', 'LIVE', 'COMPLETED', 'CANCELLED', 'ARCHIVED'];
+
+// Get a single event by ID
+export async function GET(req: NextRequest, { params }: { params: Promise<{ eventId: string }> }) {
+  const user = await getCurrentUser();
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
+  try {
+    const { eventId } = await params;
+    const result = await db.send(new GetCommand({
+      TableName: TABLE.EVENTS,
+      Key: { eventId },
+    }));
+
+    if (!result.Item) {
+      return NextResponse.json({ error: 'Event not found' }, { status: 404 });
+    }
+
+    const event = result.Item as Event;
+
+    // Access control: Presidium sees all, others see published/live/completed
+    if (!isPresidium(user)) {
+      if (!['PUBLISHED', 'LIVE', 'COMPLETED'].includes(event.status)) {
+        return NextResponse.json({ error: 'Event not accessible' }, { status: 403 });
+      }
+    }
+
+    return NextResponse.json({ success: true, data: event });
+  } catch (error) {
+    console.error('Get event error:', error);
+    return NextResponse.json({ error: 'Failed to fetch event' }, { status: 500 });
+  }
+}
+
+// Update an event (Presidium only)
+export async function PATCH(req: NextRequest, { params }: { params: Promise<{ eventId: string }> }) {
+  const user = await getCurrentUser();
+  if (!user || !isPresidium(user)) {
+    return NextResponse.json({ error: 'Unauthorized: only Presidium can update events' }, { status: 403 });
+  }
+
+  try {
+    const { eventId } = await params;
+    const body = await req.json();
+
+    // Get existing event
+    const getResult = await db.send(new GetCommand({
+      TableName: TABLE.EVENTS,
+      Key: { eventId },
+    }));
+
+    if (!getResult.Item) {
+      return NextResponse.json({ error: 'Event not found' }, { status: 404 });
+    }
+
+    const existing = getResult.Item as Event;
+
+    // Build update expression
+    const values: Record<string, unknown> = {};
+    let updateExpression = 'SET';
+    const expressionAttributeNames: Record<string, string> = {};
+
+    // Allowed fields to update
+    const allowedFields = [
+      'name', 'description', 'date', 'endDate', 'startTime', 'endTime', 'venue', 'banner', 'meetupLink', 'messageToCR',
+      'eventType', 'customEventType', 'eventMode', 'registrationRequired', 'registrationLink', 'registrationDeadline',
+      'participantCapacity', 'meetingLink', 'status'
+    ];
+
+    for (const field of allowedFields) {
+      if (field in body) {
+        const value = body[field];
+
+        // Validate specific fields
+        if (field === 'date' && value && !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+          return NextResponse.json({ error: 'date must be in ISO format (YYYY-MM-DD)' }, { status: 400 });
+        }
+        if (field === 'endDate' && value && !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+          return NextResponse.json({ error: 'endDate must be in ISO format (YYYY-MM-DD)' }, { status: 400 });
+        }
+        if ((field === 'startTime' || field === 'endTime') && value && !/^\d{2}:\d{2}$/.test(value)) {
+          return NextResponse.json({ error: 'startTime and endTime must be in HH:mm format' }, { status: 400 });
+        }
+        if (field === 'status' && value && !VALID_STATUSES.includes(value)) {
+          return NextResponse.json({ error: 'Invalid status value' }, { status: 400 });
+        }
+
+        // Validate time range if updating times
+        const newStartTime = body.startTime || existing.startTime;
+        const newEndTime = body.endTime || existing.endTime;
+        if (newStartTime >= newEndTime) {
+          return NextResponse.json({ error: 'startTime must be before endTime' }, { status: 400 });
+        }
+
+        // Validate end date vs start date
+        if (field === 'endDate' && value) {
+          const newDate = body.date || existing.date;
+          if (value < newDate) {
+            return NextResponse.json({ error: 'endDate cannot be earlier than date' }, { status: 400 });
+          }
+        }
+        if (field === 'date' && value) {
+          const newEndDate = body.endDate || existing.endDate;
+          if (newEndDate && value > newEndDate) {
+            return NextResponse.json({ error: 'date cannot be later than endDate' }, { status: 400 });
+          }
+        }
+
+        // Validate event mode
+        if (field === 'eventMode' && value && !['IN_PERSON', 'ONLINE', 'HYBRID'].includes(value)) {
+          return NextResponse.json({ error: 'Invalid event mode' }, { status: 400 });
+        }
+
+        // Validate registration fields
+        if (field === 'registrationRequired' && value === true) {
+          if (!body.registrationLink && !existing.registrationLink) {
+            return NextResponse.json({ error: 'Registration link is required when registration is required' }, { status: 400 });
+          }
+          if (!body.registrationDeadline && !existing.registrationDeadline) {
+            return NextResponse.json({ error: 'Registration deadline is required when registration is required' }, { status: 400 });
+          }
+        }
+
+        // Validate participant capacity
+        if (field === 'participantCapacity' && value && (value <= 0 || !Number.isInteger(value))) {
+          return NextResponse.json({ error: 'Participant capacity must be a positive integer' }, { status: 400 });
+        }
+
+        expressionAttributeNames[`#${field}`] = field;
+        values[`:${field}`] = value !== undefined ? value : null;
+        updateExpression += ` #${field} = :${field},`;
+      }
+    }
+
+    // Always update metadata
+    expressionAttributeNames['#updatedBy'] = 'updatedBy';
+    expressionAttributeNames['#updatedByName'] = 'updatedByName';
+    expressionAttributeNames['#updatedAt'] = 'updatedAt';
+    values[':updatedBy'] = user.memberId;
+    values[':updatedByName'] = user.name;
+    values[':updatedAt'] = new Date().toISOString();
+    updateExpression += ' #updatedBy = :updatedBy, #updatedByName = :updatedByName, #updatedAt = :updatedAt';
+
+    // Execute update
+    const updateResult = await db.send(new UpdateCommand({
+      TableName: TABLE.EVENTS,
+      Key: { eventId },
+      UpdateExpression: updateExpression,
+      ExpressionAttributeNames: expressionAttributeNames,
+      ExpressionAttributeValues: values,
+      ReturnValues: 'ALL_NEW',
+    }));
+
+    // Log audit
+    const changedFields = Object.keys(body).filter(k => allowedFields.includes(k));
+    await logAction(user, 'UPDATE_EVENT', 'Event', eventId, `Updated fields: ${changedFields.join(', ')}`);
+
+    return NextResponse.json({ success: true, data: updateResult.Attributes as Event });
+  } catch (error) {
+    console.error('Update event error:', error);
+    return NextResponse.json({ error: 'Failed to update event' }, { status: 500 });
+  }
+}
+
+// Delete an event (Presidium only)
+export async function DELETE(req: NextRequest, { params }: { params: Promise<{ eventId: string }> }) {
+  const user = await getCurrentUser();
+  if (!user || !isPresidium(user)) {
+    return NextResponse.json({ error: 'Unauthorized: only Presidium can delete events' }, { status: 403 });
+  }
+
+  try {
+    const { eventId } = await params;
+
+    // Verify event exists before deleting
+    const getResult = await db.send(new GetCommand({
+      TableName: TABLE.EVENTS,
+      Key: { eventId },
+    }));
+
+    if (!getResult.Item) {
+      return NextResponse.json({ error: 'Event not found' }, { status: 404 });
+    }
+
+    const event = getResult.Item as Event;
+
+    // Delete the event
+    await db.send(new DeleteCommand({
+      TableName: TABLE.EVENTS,
+      Key: { eventId },
+    }));
+
+    // Log audit
+    await logAction(user, 'DELETE_EVENT', 'Event', eventId, `Event deleted: ${event.name}`);
+
+    return NextResponse.json({ success: true, message: 'Event deleted successfully' });
+  } catch (error) {
+    console.error('Delete event error:', error);
+    return NextResponse.json({ error: 'Failed to delete event' }, { status: 500 });
+  }
+}

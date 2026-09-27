@@ -4,10 +4,10 @@ import Image from 'next/image';
 import { usePathname } from 'next/navigation';
 import {
   LayoutDashboard, CheckSquare, Users, Link2, Trophy, BarChart3,
-  FileText, LogOut, Menu, X, Download, Lock, Activity, Mail, AlertTriangle, Award, BookOpen
+  FileText, LogOut, Menu, X, Download, Lock, AlertTriangle, Mail, BookOpen, Calendar
 } from 'lucide-react';
 import { cn, formatRole } from '@/lib/utils';
-import { canAccessSponsorshipMail } from '@/lib/permissions';
+import { canAccessSponsorshipMail, isPresidium } from '@/lib/permissions';
 import type { SessionUser } from '@/types';
 import { useState } from 'react';
 
@@ -36,6 +36,8 @@ const navItems: NavItem[] = [
   { label: 'Vault', href: '/vault', icon: <Lock size={18} />, visible: (_user, flags) => flags.showVault },
   // Presidium-only tier, grouped together at the end so the list reads as
   // increasingly restricted rather than interleaving privilege levels.
+  // Uses isPresidium() function to respect the central RBAC logic (including dev override).
+  { label: 'Events', href: '/events', icon: <Calendar size={18} />, visible: isPresidium },
   { label: 'Analytics', href: '/analytics', icon: <BarChart3 size={18} />, roles: ['SBG_LEADER', 'SECRETARY'] },
   { label: 'Install App', href: '/install', icon: <Download size={18} /> },
 ];
