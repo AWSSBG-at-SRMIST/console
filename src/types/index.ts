@@ -278,6 +278,41 @@ export interface FormField {
   options?: string[]; // MULTIPLE_CHOICE / CHECKBOXES / DROPDOWN only
 }
 
+export type EventStatus = 'DRAFT' | 'PUBLISHED' | 'LIVE' | 'COMPLETED' | 'CANCELLED' | 'ARCHIVED';
+export type EventMode = 'IN_PERSON' | 'ONLINE' | 'HYBRID';
+export type EventDuration = 'SINGLE_DAY' | 'MULTI_DAY';
+
+export interface Event {
+  eventId: string;
+  name: string;
+  description: string;
+  date: string;
+  endDate?: string | null;
+  startTime: string;
+  endTime: string;
+  venue: string;
+  banner?: string | null;
+  bannerImageUrl?: string | null;
+  meetupLink?: string | null;
+  messageToCR?: string | null;
+  eventType?: string | null;
+  customEventType?: string | null;
+  eventMode?: EventMode | null;
+  registrationRequired?: boolean | null;
+  registrationLink?: string | null;
+  registrationDeadline?: string | null;
+  participantCapacity?: number | null;
+  meetingLink?: string | null;
+  statusReason?: string | null;
+  status: EventStatus;
+  createdBy: string;
+  createdByName: string;
+  createdAt: string;
+  updatedBy: string;
+  updatedByName: string;
+  updatedAt: string;
+}
+
 export type FormAccessMode = 'PUBLIC' | 'MEMBERS_ONLY';
 
 // A single granted Drive "reader" permission, tracked so it can be revoked

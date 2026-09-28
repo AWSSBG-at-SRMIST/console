@@ -4,10 +4,10 @@ import Image from 'next/image';
 import { usePathname } from 'next/navigation';
 import {
   LayoutDashboard, CheckSquare, Users, Link2, Trophy, BarChart3,
-  FileText, LogOut, Menu, X, Download, Lock, Activity, Mail, AlertTriangle, Award, BookOpen
+  FileText, LogOut, Menu, X, Download, Lock, AlertTriangle, Mail, BookOpen, Calendar
 } from 'lucide-react';
 import { cn, formatRole } from '@/lib/utils';
-import { canAccessSponsorshipMail } from '@/lib/permissions';
+import { canAccessSponsorshipMail, canManageEvents } from '@/lib/permissions';
 import type { SessionUser } from '@/types';
 import { useState } from 'react';
 
@@ -34,6 +34,7 @@ const navItems: NavItem[] = [
   // (showVault is precomputed server-side in PortalLayout since it depends
   // on vault data, not just the user's role).
   { label: 'Vault', href: '/vault', icon: <Lock size={18} />, visible: (_user, flags) => flags.showVault },
+  { label: 'Events', href: '/events', icon: <Calendar size={18} />, visible: canManageEvents },
   // Presidium-only tier, grouped together at the end so the list reads as
   // increasingly restricted rather than interleaving privilege levels.
   { label: 'Analytics', href: '/analytics', icon: <BarChart3 size={18} />, roles: ['SBG_LEADER', 'SECRETARY'] },

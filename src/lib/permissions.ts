@@ -5,6 +5,12 @@ export function isPresidium(actor: SessionUser): boolean {
   return actor.role === 'SECRETARY' || actor.role === 'SBG_LEADER';
 }
 
+// Console Event Management only — Presidium and Directors. Do not reuse this
+// to grant Directors Presidium-wide access in other modules.
+export function canManageEvents(actor: SessionUser): boolean {
+  return isPresidium(actor) || actor.role === 'DIRECTOR';
+}
+
 export function canEditMembers(actor: SessionUser): boolean {
   if (isPresidium(actor)) return true;
   return actor.subdomain === 'HR & Admin' && (actor.role === 'MANAGER' || actor.role === 'ASSOCIATE');
